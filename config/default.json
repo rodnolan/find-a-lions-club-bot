@@ -1,5 +1,8 @@
 {
     "appSecret": "18e3fd82148b30a50b2b3b81a28d7bb6",
     "pageAccessToken": "EAAcnK3S43PcBAJwKMkZCaA3ZBZBYI4eFEVbxMHDXRdOlfYLYbYUbNglu36zfkYUOV6YsaseWjlZAaX8bRoIGW5ZBhE3e7Yy4CbJ86bC6orZBOnEDzEjMZAECUwoyQJBhl1qHXXTLIp8qi4Gx8SqRbJZBk2AhlNZANNUwQhsPAYe81FwZDZD",
-    "validationToken": "FindAClub"
+    "validationToken": "FindAClub",
+    "mongoURL": "mongodb://lionsuser:LionsUser$1234@ds229621.mlab.com:29621/lions-clubs-addresses",
+    "googleAPIKey": "AIzaSyB1oiTbcdi8aCCklhQggQ92LKsNr5HQ2LA",
+    "closestClubsToReturn": 5
 }
