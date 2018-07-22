@@ -1,19 +1,28 @@
 /* jshint node: true, devel: true */
 'use strict';
 
-const 
+const
   bodyParser = require('body-parser'),
   config = require('config'),
   crypto = require('crypto'),
   express = require('express'),
-  https = require('https'),  
-  request = require('request');
+  https = require('https'),
+  request = require('request'),
+  mongoClient = require('mongodb').MongoClient,
+  googleMapsClient = require('@google/maps').createClient({
+    Promise: Promise,
+    key: config.get('googleAPIKey')
+  });
 
+var db;
 var app = express();
 app.set('port', 5000);
 //cle
-app.use(bodyParser.json({ verify: verifyRequestSignature }));
+app.use(bodyParser.json({
+  verify: verifyRequestSignature
+}));
 //app.use(express.static('public'));
+
 
 /*
  * Open config/default.json and set your config values before running this server.
@@ -30,6 +39,12 @@ const VALIDATION_TOKEN = config.get('validationToken');
 
 // App Dashboard > Messenger > Settings > Token Generation > select your page > copy the token that appears
 const PAGE_ACCESS_TOKEN = config.get('pageAccessToken');
+
+//connection URL to MongoDB on mLab
+const MONGO_DB_URL = config.get('mongoURL');
+
+//how many closest clubs to return
+const CLUBS_NUM = config.get('closestClubsToReturn');
 
 // In an early version of this bot, the images were served from the local public/ folder.
 // Using an ngrok.io domain to serve images is no longer supported by the Messenger Platform.
@@ -62,8 +77,8 @@ function verifyRequestSignature(req, res, buf) {
     var signatureHash = elements[1];
 
     var expectedHash = crypto.createHmac('sha1', APP_SECRET)
-                        .update(buf)
-                        .digest('hex');
+      .update(buf)
+      .digest('hex');
 
     console.log("received  %s", signatureHash);
     console.log("exepected %s", expectedHash);
@@ -80,15 +95,15 @@ function verifyRequestSignature(req, res, buf) {
  * Only then should you respond to the request with the 
  * challenge that was sent. 
  */
-app.get('/webhook', function(req, res) {
+app.get('/webhook', function (req, res) {
   if (req.query['hub.mode'] === 'subscribe' &&
-      req.query['hub.verify_token'] === VALIDATION_TOKEN) {
+    req.query['hub.verify_token'] === VALIDATION_TOKEN) {
     console.log("[app.get] Validating webhook");
     res.status(200).send(req.query['hub.challenge']);
   } else {
     console.error("Failed validation. Validation token mismatch.");
-    res.sendStatus(403);          
-  }  
+    res.sendStatus(403);
+  }
 });
 
 
@@ -103,30 +118,30 @@ app.post('/webhook', function (req, res) {
   console.log("message received!");
   var data = req.body;
   console.log(JSON.stringify(data));
-  
+
   if (data.object == 'page') {
     // send back a 200 within 20 seconds to avoid timeouts
     res.sendStatus(200);
     // entries from multiple pages may be batched in one request
-    data.entry.forEach(function(pageEntry) {
-      
-        // iterate over each messaging event for this page
-        pageEntry.messaging.forEach(function(messagingEvent) {
-          let propertyNames = Object.keys(messagingEvent);
-          console.log("[app.post] Webhook event props: ", propertyNames.join());
-  
-          if (messagingEvent.message) {
-            processMessageFromPage(messagingEvent);
-          } else if (messagingEvent.postback) {
-            // user replied by tapping a postback button
-            processPostbackMessage(messagingEvent);
-          } else {
-            console.log("[app.post] not prepared to handle this message type.");
-          }
-  
-        });
+    data.entry.forEach(function (pageEntry) {
+
+      // iterate over each messaging event for this page
+      pageEntry.messaging.forEach(function (messagingEvent) {
+        let propertyNames = Object.keys(messagingEvent);
+        console.log("[app.post] Webhook event props: ", propertyNames.join());
+
+        if (messagingEvent.message) {
+          processMessageFromPage(messagingEvent);
+        } else if (messagingEvent.postback) {
+          // user replied by tapping a postback button
+          processPostbackMessage(messagingEvent);
+        } else {
+          console.log("[app.post] not prepared to handle this message type.");
+        }
+
       });
-  
+    });
+
 
   }
 });
@@ -148,8 +163,8 @@ function processPostbackMessage(event) {
 
   console.log("[processPostbackMessage] from user (%d) " +
     "on page (%d) " +
-    "with payload ('%s') " + 
-    "at (%d)", 
+    "with payload ('%s') " +
+    "at (%d)",
     senderID, recipientID, payload, timeOfPostback);
   if (payload === 'Get Started') {
     sendHelpOptionsAsQuickReplies(senderID);
@@ -162,17 +177,17 @@ function processPostbackMessage(event) {
  * Called when a message is sent to your page. 
  * 
  */
-function processMessageFromPage(event) {
+async function processMessageFromPage(event) {
   var senderID = event.sender.id;
   var pageID = event.recipient.id;
   var timeOfMessage = event.timestamp;
   var message = event.message;
 
-  console.log("[processMessageFromPage] user (%d) page (%d) timestamp (%d) and message (%s)", 
+  console.log("[processMessageFromPage] user (%d) page (%d) timestamp (%d) and message (%s)",
     senderID, pageID, timeOfMessage, JSON.stringify(message));
 
   if (message.quick_reply) {
-    console.log("[processMessageFromPage] quick_reply.payload (%s)", 
+    console.log("[processMessageFromPage] quick_reply.payload (%s)",
       message.quick_reply.payload);
     handleQuickReplyResponse(event);
     return;
@@ -182,17 +197,36 @@ function processMessageFromPage(event) {
   // See: https://developers.facebook.com/docs/messenger-platform/webhook-reference/message-received
   var messageText = message.text;
   if (messageText) {
-    console.log("[processMessageFromPage]: %s", messageText); 
+    console.log("[processMessageFromPage]: %s", messageText);
     var lowerCaseMsg = messageText.toLowerCase();
     switch (lowerCaseMsg) {
       case 'help':
         // handle 'help' as a special case
         sendHelpOptionsAsQuickReplies(senderID);
         break;
-      
+
       default:
-        // otherwise, just echo it back to the sender
-        sendTextMessage(senderID, messageText);
+        //check if postal code was entered
+        var fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/;
+        var partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/;
+        if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
+          const result = await getClosestClubs(messageText);
+          sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n ${result}`);
+        } else {
+          // otherwise, just echo it back to the sender
+          sendTextMessage(senderID, messageText);
+        }
+    }
+  }
+
+  if (message.attachments && message.attachments.length > 0) {
+    //got attachments
+    const att = message.attachments[0];
+    if (att && att.type === 'location') {
+      //got location attachment
+      const coordinates = att.payload.coordinates;
+      const result = await getClosestClubs(null, coordinates);
+      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n ${result}`);
     }
   }
 }
@@ -203,23 +237,22 @@ function processMessageFromPage(event) {
  * 
  */
 function sendHelpOptionsAsQuickReplies(recipientId) {
-  console.log("[sendHelpOptionsAsQuickReplies] Sending help options menu"); 
+  console.log("[sendHelpOptionsAsQuickReplies] Sending help options menu");
   var messageData = {
     recipient: {
       id: recipientId
     },
     message: {
       text: "To find a club near you, provide your current location or a Postal Code.",
-      quick_replies: [
-        { 
-          "content_type":"text",
-          "title":"Postal Code",
-          "payload":"QR_POSTAL_CODE" 
+      quick_replies: [{
+          "content_type": "text",
+          "title": "Postal Code",
+          "payload": "QR_POSTAL_CODE"
         },
-        { 
-          "content_type":"text",
-          "title":"Current Location",
-          "payload":"QR_LOCATION" 
+        {
+          "content_type": "text",
+          "title": "Current Location",
+          "payload": "QR_LOCATION"
         }
       ]
     }
@@ -236,19 +269,19 @@ function handleQuickReplyResponse(event) {
   var pageID = event.recipient.id;
   var message = event.message;
   var quickReplyPayload = message.quick_reply.payload;
-  
-  console.log("[handleQuickReplyResponse] Handling quick reply response (%s) from sender (%d) to page (%d) with message (%s)", 
+
+  console.log("[handleQuickReplyResponse] Handling quick reply response (%s) from sender (%d) to page (%d) with message (%s)",
     quickReplyPayload, senderID, pageID, JSON.stringify(message));
 
   //respondToHelpRequest(senderID, quickReplyPayload);
   switch (quickReplyPayload) {
     case 'QR_POSTAL_CODE':
       requestUsersPostalCode(senderID);
-    break;
+      break;
     case 'QR_LOCATION':
       requestUsersLocation(senderID);
-    break;
-  } 
+      break;
+  }
 }
 
 function requestUsersPostalCode(senderID) {
@@ -257,11 +290,11 @@ function requestUsersPostalCode(senderID) {
     recipient: {
       id: senderID
     },
-    message:{
-      "text":"Please enter your Postal Code."
+    message: {
+      "text": "Please enter your Postal Code."
     }
   };
-  callSendAPI(messageData);  
+  callSendAPI(messageData);
 }
 
 function requestUsersLocation(senderID) {
@@ -270,24 +303,22 @@ function requestUsersLocation(senderID) {
     recipient: {
       id: senderID
     },
-    message:{
-      text:"Please tap the button to send your current location.",
-      quick_replies:[
-        {
-          content_type:"location"
-        }
-      ]
-  
+    message: {
+      text: "Please tap the button to send your current location.",
+      quick_replies: [{
+        content_type: "location"
+      }]
+
     }
   };
-  callSendAPI(messageData);  
+  callSendAPI(messageData);
 }
 
 function respondToHelpRequest(senderID, payload) {
   // set useGenericTemplates to false to send image attachments instead of generic templates
-  var useGenericTemplates = true; 
+  var useGenericTemplates = true;
   var messageData;
-  
+
   if (useGenericTemplates) {
     // respond to the sender's help request by presenting a carousel-style 
     // set of screenshots of the application in action 
@@ -297,7 +328,7 @@ function respondToHelpRequest(senderID, payload) {
     messageData = getImageAttachments(senderID, payload);
   }
   if (messageData) {
-    callSendAPI(messageData);  
+    callSendAPI(messageData);
   }
 }
 
@@ -314,7 +345,7 @@ function getGenericTemplates(recipientId, requestForHelpOnFeature) {
   // each button must be of type postback but title
   // and payload are variable depending on which 
   // set of options you want to provide
-  var addSectionButton = function(title, payload) {
+  var addSectionButton = function (title, payload) {
     sectionButtons.push({
       type: 'postback',
       title: title,
@@ -331,124 +362,106 @@ function getGenericTemplates(recipientId, requestForHelpOnFeature) {
       addSectionButton('Photo', 'QR_PHOTO_1');
       addSectionButton('Caption', 'QR_CAPTION_1');
       addSectionButton('Background', 'QR_BACKGROUND_1');
-      
-      templateElements.push(
-        {
-          title: "Rotation",
-          subtitle: "portrait mode",
-          image_url: IMG_BASE_PATH + "01-rotate-landscape.png",
-          buttons: sectionButtons 
-        }, 
-        {
-          title: "Rotation",
-          subtitle: "landscape mode",
-          image_url: IMG_BASE_PATH + "02-rotate-portrait.png",
-          buttons: sectionButtons 
-        }
-      );
-    break; 
+
+      templateElements.push({
+        title: "Rotation",
+        subtitle: "portrait mode",
+        image_url: IMG_BASE_PATH + "01-rotate-landscape.png",
+        buttons: sectionButtons
+      }, {
+        title: "Rotation",
+        subtitle: "landscape mode",
+        image_url: IMG_BASE_PATH + "02-rotate-portrait.png",
+        buttons: sectionButtons
+      });
+      break;
     case 'QR_PHOTO_1':
       addSectionButton('Rotation', 'QR_ROTATION_1');
       addSectionButton('Caption', 'QR_CAPTION_1');
       addSectionButton('Background', 'QR_BACKGROUND_1');
 
-      templateElements.push(
-        {
-          title: "Photo Picker",
-          subtitle: "click to start",
-          image_url: IMG_BASE_PATH + "03-photo-hover.png",
-          buttons: sectionButtons 
-        }, 
-        {
-          title: "Photo Picker",
-          subtitle: "Downloads folder",
-          image_url: IMG_BASE_PATH + "04-photo-list.png",
-          buttons: sectionButtons 
-        },
-        {
-          title: "Photo Picker",
-          subtitle: "photo selected",
-          image_url: IMG_BASE_PATH + "05-photo-selected.png",
-          buttons: sectionButtons 
-        }        
-      );
-    break; 
+      templateElements.push({
+        title: "Photo Picker",
+        subtitle: "click to start",
+        image_url: IMG_BASE_PATH + "03-photo-hover.png",
+        buttons: sectionButtons
+      }, {
+        title: "Photo Picker",
+        subtitle: "Downloads folder",
+        image_url: IMG_BASE_PATH + "04-photo-list.png",
+        buttons: sectionButtons
+      }, {
+        title: "Photo Picker",
+        subtitle: "photo selected",
+        image_url: IMG_BASE_PATH + "05-photo-selected.png",
+        buttons: sectionButtons
+      });
+      break;
     case 'QR_CAPTION_1':
       addSectionButton('Rotation', 'QR_ROTATION_1');
       addSectionButton('Photo', 'QR_PHOTO_1');
       addSectionButton('Background', 'QR_BACKGROUND_1');
 
-      templateElements.push(
-        {
-          title: "Caption",
-          subtitle: "click to start",
-          image_url: IMG_BASE_PATH + "06-text-hover.png",
-          buttons: sectionButtons 
-        }, 
-        {
-          title: "Caption",
-          subtitle: "enter text",
-          image_url: IMG_BASE_PATH + "07-text-mid-entry.png",
-          buttons: sectionButtons 
-        },
-        {
-          title: "Caption",
-          subtitle: "click OK",
-          image_url: IMG_BASE_PATH + "08-text-entry-done.png",
-          buttons: sectionButtons 
-        },
-        {
-          title: "Caption",
-          subtitle: "Caption done",
-          image_url: IMG_BASE_PATH + "09-text-complete.png",
-          buttons: sectionButtons 
-        }
-      );
-    break; 
+      templateElements.push({
+        title: "Caption",
+        subtitle: "click to start",
+        image_url: IMG_BASE_PATH + "06-text-hover.png",
+        buttons: sectionButtons
+      }, {
+        title: "Caption",
+        subtitle: "enter text",
+        image_url: IMG_BASE_PATH + "07-text-mid-entry.png",
+        buttons: sectionButtons
+      }, {
+        title: "Caption",
+        subtitle: "click OK",
+        image_url: IMG_BASE_PATH + "08-text-entry-done.png",
+        buttons: sectionButtons
+      }, {
+        title: "Caption",
+        subtitle: "Caption done",
+        image_url: IMG_BASE_PATH + "09-text-complete.png",
+        buttons: sectionButtons
+      });
+      break;
     case 'QR_BACKGROUND_1':
       addSectionButton('Rotation', 'QR_ROTATION_1');
       addSectionButton('Photo', 'QR_PHOTO_1');
       addSectionButton('Caption', 'QR_CAPTION_1');
 
-      templateElements.push(
-        {
-          title: "Background Color Picker",
-          subtitle: "click to start",
-          image_url: IMG_BASE_PATH + "10-background-picker-hover.png",
-          buttons: sectionButtons 
-        },
-        {
-          title: "Background Color Picker",
-          subtitle: "click current color",
-          image_url: IMG_BASE_PATH + "11-background-picker-appears.png",
-          buttons: sectionButtons 
-        },
-        {
-          title: "Background Color Picker",
-          subtitle: "select new color",
-          image_url: IMG_BASE_PATH + "12-background-picker-selection.png",
-          buttons: sectionButtons 
-        }, 
-        {
-          title: "Background Color Picker",
-          subtitle: "click ok",
-          image_url: IMG_BASE_PATH + "13-background-picker-selection-made.png",
-          buttons: sectionButtons 
-        },
-        {
-          title: "Background Color Picker",
-          subtitle: "color is applied",
-          image_url: IMG_BASE_PATH + "14-background-changed.png",
-          buttons: sectionButtons 
-        }
-      );
-    break; 
+      templateElements.push({
+        title: "Background Color Picker",
+        subtitle: "click to start",
+        image_url: IMG_BASE_PATH + "10-background-picker-hover.png",
+        buttons: sectionButtons
+      }, {
+        title: "Background Color Picker",
+        subtitle: "click current color",
+        image_url: IMG_BASE_PATH + "11-background-picker-appears.png",
+        buttons: sectionButtons
+      }, {
+        title: "Background Color Picker",
+        subtitle: "select new color",
+        image_url: IMG_BASE_PATH + "12-background-picker-selection.png",
+        buttons: sectionButtons
+      }, {
+        title: "Background Color Picker",
+        subtitle: "click ok",
+        image_url: IMG_BASE_PATH + "13-background-picker-selection-made.png",
+        buttons: sectionButtons
+      }, {
+        title: "Background Color Picker",
+        subtitle: "color is applied",
+        image_url: IMG_BASE_PATH + "14-background-changed.png",
+        buttons: sectionButtons
+      });
+      break;
   }
 
   if (templateElements.length < 2) {
     console.error("each template should have at least two elements");
   }
-  
+
   var messageData = {
     recipient: {
       id: recipientId
@@ -476,21 +489,20 @@ function getGenericTemplates(recipientId, requestForHelpOnFeature) {
  */
 function getImageAttachments(recipientId, helpRequestType) {
   var textToSend = '';
-  var quickReplies = [
-    {
-      "content_type":"text",
-      "title":"Restart",
-      "payload":"QR_RESTART"
+  var quickReplies = [{
+      "content_type": "text",
+      "title": "Restart",
+      "payload": "QR_RESTART"
     }, // this option should always be present because it allows the user to start over
     {
-      "content_type":"text",
-      "title":"Continue",
-      "payload":""
+      "content_type": "text",
+      "title": "Continue",
+      "payload": ""
     } // the Continue option only makes sense if there is more content to show 
-      // remove this option when you are at the end of a branch in the content tree
-      // i.e.: when you are showing the last message for the selected feature
+    // remove this option when you are at the end of a branch in the content tree
+    // i.e.: when you are showing the last message for the selected feature
   ];
-  
+
   // to send an image attachment in a message, just set the payload property of this attachment object
   // if the payload property is defined, this will be added to the message before it is sent
   var attachment = {
@@ -498,151 +510,151 @@ function getImageAttachments(recipientId, helpRequestType) {
     "payload": ""
   };
 
-  switch(helpRequestType) {
-    case 'QR_RESTART' :
+  switch (helpRequestType) {
+    case 'QR_RESTART':
       sendHelpOptionsAsQuickReplies(recipientId);
       return;
-    break;
-    
-    // the Rotation feature
-    case 'QR_ROTATION_1' :
+      break;
+
+      // the Rotation feature
+    case 'QR_ROTATION_1':
       textToSend = 'Click the Rotate button to toggle the poster\'s orientation between landscape and portrait mode.';
       quickReplies[1].payload = "QR_ROTATION_2";
-    break; 
-    case 'QR_ROTATION_2' :
+      break;
+    case 'QR_ROTATION_2':
       // 1 of 2 (portrait, landscape)
       attachment.payload = {
         url: IMG_BASE_PATH + "01-rotate-landscape.png"
       }
       quickReplies[1].payload = "QR_ROTATION_3";
-    break; 
-    case 'QR_ROTATION_3' :
+      break;
+    case 'QR_ROTATION_3':
       // 2 of 2 (portrait, landscape)
       attachment.payload = {
         url: IMG_BASE_PATH + "02-rotate-portrait.png"
       }
       quickReplies.pop();
       quickReplies[0].title = "Explore another feature";
-    break; 
-    // the Rotation feature
+      break;
+      // the Rotation feature
 
 
-    // the Photo feature
-    case 'QR_PHOTO_1' :
+      // the Photo feature
+    case 'QR_PHOTO_1':
       textToSend = 'Click the Photo button to select an image to use on your poster. We recommend visiting https://unsplash.com/random from your device to seed your Downloads folder with some images before you get started.';
       quickReplies[1].payload = "QR_PHOTO_2";
-    break; 
-    case 'QR_PHOTO_2' :
+      break;
+    case 'QR_PHOTO_2':
       // 1 of 3 (placeholder image, Downloads folder, poster with image)
       attachment.payload = {
         url: IMG_BASE_PATH + "03-photo-hover.png"
       }
       quickReplies[1].payload = "QR_PHOTO_3";
-    break; 
-    case 'QR_PHOTO_3' :
+      break;
+    case 'QR_PHOTO_3':
       // 2 of 3 (placeholder image, Downloads folder, poster with image)
       attachment.payload = {
         url: IMG_BASE_PATH + "04-photo-list.png"
       }
       quickReplies[1].payload = "QR_PHOTO_4";
-    break; 
-    case 'QR_PHOTO_4' :
+      break;
+    case 'QR_PHOTO_4':
       // 3 of 3 (placeholder image, Downloads folder, poster with image)
       attachment.payload = {
         url: IMG_BASE_PATH + "05-photo-selected.png"
       }
       quickReplies.pop();
       quickReplies[0].title = "Explore another feature";
-    break; 
-    // the Photo feature
+      break;
+      // the Photo feature
 
 
-    // the Caption feature
-    case 'QR_CAPTION_1' :
+      // the Caption feature
+    case 'QR_CAPTION_1':
       textToSend = 'Click the Text button to set the caption that appears at the bottom of the poster.';
       quickReplies[1].payload = "QR_CAPTION_2";
-    break; 
-    case 'QR_CAPTION_2' :
+      break;
+    case 'QR_CAPTION_2':
       // 1 of 4 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "06-text-hover.png"
       }
       quickReplies[1].payload = "QR_CAPTION_3";
-    break; 
-    case 'QR_CAPTION_3' :
+      break;
+    case 'QR_CAPTION_3':
       // 2 of 4: (hover, entering caption, mid-edit, poster with new caption
       attachment.payload = {
         url: IMG_BASE_PATH + "07-text-mid-entry.png"
       }
       quickReplies[1].payload = "QR_CAPTION_4";
-    break; 
-    case 'QR_CAPTION_4' :
+      break;
+    case 'QR_CAPTION_4':
       // 3 of 4 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "08-text-entry-done.png"
       }
       quickReplies[1].payload = "QR_CAPTION_5";
-    break; 
-    case 'QR_CAPTION_5' :
+      break;
+    case 'QR_CAPTION_5':
       // 4 of 4 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "09-text-complete.png"
       }
       quickReplies.pop();
       quickReplies[0].title = "Explore another feature";
-    break; 
-    // the Caption feature
+      break;
+      // the Caption feature
 
 
 
-    // the Color Picker feature
-    case 'QR_BACKGROUND_1' :
+      // the Color Picker feature
+    case 'QR_BACKGROUND_1':
       textToSend = 'Click the Background button to select a background color for your poster.';
       quickReplies[1].payload = "QR_BACKGROUND_2";
-    break; 
-    case 'QR_BACKGROUND_2' :
+      break;
+    case 'QR_BACKGROUND_2':
       // 1 of 5 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "10-background-picker-hover.png"
       }
       quickReplies[1].payload = "QR_BACKGROUND_3";
-    break; 
-    case 'QR_BACKGROUND_3' :
+      break;
+    case 'QR_BACKGROUND_3':
       // 2 of 5 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "11-background-picker-appears.png"
       }
       quickReplies[1].payload = "QR_BACKGROUND_4";
-    break; 
-    case 'QR_BACKGROUND_4' :
+      break;
+    case 'QR_BACKGROUND_4':
       // 3 of 5 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "12-background-picker-selection.png"
       }
       quickReplies[1].payload = "QR_BACKGROUND_5";
-    break; 
-    case 'QR_BACKGROUND_5' :
+      break;
+    case 'QR_BACKGROUND_5':
       // 4 of 5 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "13-background-picker-selection-made.png"
       }
       quickReplies[1].payload = "QR_BACKGROUND_6";
-    break; 
-    case 'QR_BACKGROUND_6' :
+      break;
+    case 'QR_BACKGROUND_6':
       // 5 of 5 (hover, entering caption, mid-edit, poster with new caption)
       attachment.payload = {
         url: IMG_BASE_PATH + "14-background-changed.png"
       }
       quickReplies.pop();
       quickReplies[0].title = "Explore another feature";
-    break; 
-    // the Color Picker feature
+      break;
+      // the Color Picker feature
 
-    default : 
+    default:
       sendHelpOptionsAsQuickReplies(recipientId);
       return;
 
-    break;
+      break;
   }
 
   var messageData = {
@@ -689,7 +701,9 @@ function sendTextMessage(recipientId, messageText) {
 function callSendAPI(messageData) {
   request({
     uri: 'https://graph.facebook.com/v2.6/me/messages',
-    qs: { access_token: PAGE_ACCESS_TOKEN },
+    qs: {
+      access_token: PAGE_ACCESS_TOKEN
+    },
     method: 'POST',
     json: messageData
   }, function (error, response, body) {
@@ -698,23 +712,134 @@ function callSendAPI(messageData) {
       var messageId = body.message_id;
 
       if (messageId) {
-        console.log("[callSendAPI] message id %s sent to recipient %s", 
+        console.log("[callSendAPI] message id %s sent to recipient %s",
           messageId, recipientId);
       } else {
-        console.log("[callSendAPI] called Send API for recipient %s", 
+        console.log("[callSendAPI] called Send API for recipient %s",
           recipientId);
       }
     } else {
       console.error("[callSendAPI] Send API call failed", response.statusCode, response.statusMessage, body.error);
     }
-  });  
+  });
 }
 
-/*
- * Start your server
+
+/**
+ *  Connect to the database
  */
-app.listen(app.get('port'), function() {
-  console.log('[app.listen] Node app is running on port', app.get('port'));
+mongoClient.connect(MONGO_DB_URL, {
+  useNewUrlParser: true
+}, (err, client) => {
+  if (err) return console.log(err);
+  db = client.db('lions-clubs-addresses');
+  /*
+   * Start your server
+   */
+  app.listen(app.get('port'), function () {
+    console.log('[app.listen] Node app is running on port', app.get('port'));
+  });
 });
+
+function callGeocode(paramObj) {
+  return googleMapsClient.geocode(paramObj).asPromise();
+}
+
+function parseAddressToString(addressObj) {
+  return `${addressObj.streetNumber} ${addressObj.streetName}, ${addressObj.city}, ${addressObj.province}`;
+}
+
+//parse longitude and latitude
+function getGeocodeLocation(data) {
+  return data.geometry.location;
+}
+
+function callDistanceMatrix(query) {
+  return googleMapsClient.distanceMatrix(query).asPromise();
+}
+
+function getClubInfo(obj) {
+  const result = `${obj.clubName}
+  ${obj.meetings.address.streetNumber} ${obj.meetings.address.streetName}, 
+  ${obj.meetings.address.city}, ${obj.meetings.address.province}, 
+  ${obj.meetings.address.postal}\n`;
+  return result;
+}
+
+async function getCoordinates(addr) {
+  const addressObj = {
+    address: addr
+  };
+  const response = await callGeocode(addressObj);
+  if (response.status !== 200) {
+    console.log(response.error_message);
+    return '';
+  } else {
+    const geoData = response.json.results[0];
+    const originLonLat = getGeocodeLocation(geoData);
+    return originLonLat.lat + ',' + originLonLat.lng;
+  }
+}
+
+/** 
+ * By providing an address (if postal code it would be approximate location) it 
+ * will return an array of clubs which are closest to provided address
+ * if providing coordinates, it will be used straigh without checking Google API Geocode
+ */
+function getClosestClubs(address, coordinates) {
+  return new Promise(async(resolve, reject) => {
+
+    try {
+      //first check if coordinates already passed so no need to lookup
+      //get origin formatted "latitude,longitude"
+      let origin = '';
+      if (coordinates) {
+        origin = `${coordinates.lat},${coordinates.long}`;
+      } else {
+        origin = await getCoordinates(address);
+      }
+
+      const clubs = await db.collection('clubs').find().toArray();
+      const locations = clubs.map(item =>
+        item.meetings.address.location.lat + ',' + item.meetings.address.location.lng
+      );
+
+      const query = {
+        origins: [origin],
+        destinations: locations
+      };
+
+      const distResponse = await callDistanceMatrix(query);
+
+      if (distResponse.status !== 200) {
+        reject(distResponse.error_message);
+      } else {
+
+        const result = distResponse.json;
+        if (result.status !== 'OK') {
+          reject(result.error_message);
+        } else {
+
+          const returnedElements = result.rows[0].elements;
+          const distancesToSort = returnedElements.map((el, index) => [el.distance.value, index]);
+          distancesToSort.sort((a, b) => a[0] - b[0]);
+          const requiredIndexedDistances = distancesToSort.slice(0, CLUBS_NUM);
+          let foundClubs = [];
+          for (let i = 0; i < requiredIndexedDistances.length; i++) {
+            foundClubs.push(getClubInfo(clubs[requiredIndexedDistances[i][1]]));
+          }
+          //const foundClubs = clubs.filter((el, index) => r.map(e => e[1] === index)).forEach(element => getClubInfo(element));
+          resolve(foundClubs);
+        }
+      }
+
+    } catch (err) {
+      console.log(err);
+      reject(err);
+    }
+  });
+}
+
+
 
 module.exports = app;
