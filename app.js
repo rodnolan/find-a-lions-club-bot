@@ -768,7 +768,8 @@ function getClubInfo(obj) {
 
 async function getCoordinates(addr) {
   const addressObj = {
-    address: addr
+    address: addr,
+    region: 'ca'
   };
   const response = await callGeocode(addressObj);
   if (response.status !== 200) {
