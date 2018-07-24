@@ -12,6 +12,7 @@
     "config": "^1.20.4",
     "ejs": "^2.4.2",
     "express": "^4.13.4",
+    "google-maps-image-api": "^1.0.3",
     "mongodb": "^3.1.1",
     "request": "^2.72.0"
   },

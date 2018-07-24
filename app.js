@@ -12,7 +12,8 @@ const
   googleMapsClient = require('@google/maps').createClient({
     Promise: Promise,
     key: config.get('googleAPIKey')
-  });
+  }),
+  imageAPI = require('google-maps-image-api');
 
 var db;
 var app = express();
@@ -45,6 +46,8 @@ const MONGO_DB_URL = config.get('mongoURL');
 
 //how many closest clubs to return
 const CLUBS_NUM = config.get('closestClubsToReturn');
+
+const GOOGLE_API_KEY = config.get('googleAPIKey');
 
 // In an early version of this bot, the images were served from the local public/ folder.
 // Using an ngrok.io domain to serve images is no longer supported by the Messenger Platform.
@@ -209,9 +212,21 @@ async function processMessageFromPage(event) {
         //check if postal code was entered
         var fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/;
         var partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/;
+        var zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
         if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
-          const result = await getClosestClubs(messageText);
-          sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n ${result}`);
+
+          const clubs = await getClosestClubs(messageText, null, 'ca');
+          sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
+          sendGenericTemplates(senderID, clubs);
+
+        } else if (messageText.match(zipCodeRegex)) {
+          //us zip code so restrict and search for provided location in US
+          const clubs = await getClosestClubs(messageText, null, 'us');
+          sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
+
+          sendGenericTemplates(senderID, clubs);
+
+
         } else {
           // otherwise, just echo it back to the sender
           sendTextMessage(senderID, messageText);
@@ -225,12 +240,13 @@ async function processMessageFromPage(event) {
     if (att && att.type === 'location') {
       //got location attachment
       const coordinates = att.payload.coordinates;
-      const result = await getClosestClubs(null, coordinates);
-      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n ${result}`);
+      const clubs = await await getClosestClubs(null, coordinates);
+      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
+
+      sendGenericTemplates(senderID, clubs);
     }
   }
 }
-
 
 /*
  * Send a message with the four Quick Reply buttons 
@@ -675,6 +691,76 @@ function getImageAttachments(recipientId, helpRequestType) {
   return messageData;
 }
 
+function compileAddressString(addressObj) {
+  return `${addressObj.streetNumber} ${addressObj.streetName}, 
+  ${addressObj.city}, ${addressObj.province} ${addressObj.postal}`;
+}
+
+function getMultipleGenericTemplates(recipientId, clubObjects) {
+
+  var messages = [];
+  
+  for (const clubObject of clubObjects) {
+    var btns = []; 
+    var defaultAction = null;
+
+    if (clubObject.website) {
+      btns.push({
+        type: "web_url",
+        url: clubObject.website,
+        title: "View Website"
+      });
+      defaultAction = {
+        type: "web_url",
+        url: clubObject.website,
+        webview_height_ratio: "tall"
+      };
+    }
+    if (clubObject.membershipContact.phone) {
+      btns.push({
+        type: "phone_number",
+        title: `Call for membership`, // was too long to include name ${clubObject.membershipContact.name}
+        payload: clubObject.membershipContact.phone
+      });
+    }
+   
+    
+    var messageData = {
+      title: clubObject.clubName,
+      image_url: clubObject.imageUrl,
+      subtitle: "Meetings at " + compileAddressString(clubObject.meetings.address),
+      buttons: btns
+    }
+    if(defaultAction) {
+      messageData.default_action = defaultAction;
+    }
+    messages.push(messageData);
+  }
+  return messages;
+}
+
+/**
+ * Send multiple generic templates using the Send API
+ */
+function sendGenericTemplates(recipientId, clubs) {
+  var templates = getMultipleGenericTemplates(recipientId, clubs);
+  var messageData = {
+    recipient: {
+      id: recipientId
+    },
+    message: {
+      attachment: {
+        type: "template",
+        payload: {
+          template_type: "generic",
+          elements: templates
+        }
+      }
+    }
+  };
+  console.log("[sendMultipleGenericTemplates] %s", JSON.stringify(messageData));
+  callSendAPI(messageData);
+}
 
 /*
  * Send a text message using the Send API.
@@ -751,7 +837,12 @@ function parseAddressToString(addressObj) {
 
 //parse longitude and latitude
 function getGeocodeLocation(data) {
+  if (data.geometry) {
   return data.geometry.location;
+  }
+  else {
+    return '';
+  }
 }
 
 function callDistanceMatrix(query) {
@@ -766,10 +857,41 @@ function getClubInfo(obj) {
   return result;
 }
 
-async function getCoordinates(addr) {
+/**
+ * make a call to Maps Static API and returns a PNG image url
+ * with client's location as blue pinpoint and a club's - as red
+ * @param {client's location string as 'lon,lat'} clientLocationString 
+ * @param {club's location string as 'lon,lat'} clubLocationString 
+ */
+function getMapImageUrl(clientLocationString, clubLocationString) {
+  // return new Promise((resolve, reject) => {
+  //   const url = `https://maps.googleapis.com/maps/api/staticmap?size=400x400&maptype=roadmap\
+  //               &markers=size:mid%7Ccolor:blue%7C${clientLocationString}
+  //               &markers=size:mid%7Ccolor:red%7C${clubLocationString}&key=AIzaSyB1oiTbcdi8aCCklhQggQ92LKsNr5HQ2LA`;
+  //   request({ uri: url }, (error, response, body) => {
+  //       if (!error && response.statusCode == 200) {
+  //         resolve(body);
+  //       }
+  //       else {
+  //         reject(error);
+  //       }
+  //   });
+  // });
+  return imageAPI({
+    center: '',
+    key: GOOGLE_API_KEY,
+    type: 'staticmap',
+    size: '400x400',
+    maptype: 'roadmap',
+    format: 'PNG',
+    markers: [`size:mid|color:blue|${clientLocationString}`, `size:mid|color:red|${clubLocationString}`],
+  });
+}
+
+async function getCoordinates(addr, regionCode) {
   const addressObj = {
     address: addr,
-    region: 'ca'
+    region: regionCode || 'ca'
   };
   const response = await callGeocode(addressObj);
   if (response.status !== 200) {
@@ -786,9 +908,10 @@ async function getCoordinates(addr) {
  * By providing an address (if postal code it would be approximate location) it 
  * will return an array of clubs which are closest to provided address
  * if providing coordinates, it will be used straigh without checking Google API Geocode
+ * regionCode, if provided, restricts geocoding to that region
  */
-function getClosestClubs(address, coordinates) {
-  return new Promise(async(resolve, reject) => {
+function getClosestClubs(address, coordinates, regionCode) {
+  return new Promise(async (resolve, reject) => {
 
     try {
       //first check if coordinates already passed so no need to lookup
@@ -797,7 +920,7 @@ function getClosestClubs(address, coordinates) {
       if (coordinates) {
         origin = `${coordinates.lat},${coordinates.long}`;
       } else {
-        origin = await getCoordinates(address);
+        origin = await getCoordinates(address, regionCode);
       }
 
       const clubs = await db.collection('clubs').find().toArray();
@@ -827,7 +950,16 @@ function getClosestClubs(address, coordinates) {
           const requiredIndexedDistances = distancesToSort.slice(0, CLUBS_NUM);
           let foundClubs = [];
           for (let i = 0; i < requiredIndexedDistances.length; i++) {
-            foundClubs.push(getClubInfo(clubs[requiredIndexedDistances[i][1]]));
+            const c = clubs[requiredIndexedDistances[i][1]];
+            let img = '';
+            try {
+              img = await getMapImageUrl(origin, `${c.meetings.address.location.lat},${c.meetings.address.location.lng}`);
+              console.log(img);
+            } catch (err) {
+              console.log(err);
+            }
+            c.imageUrl = img;
+            foundClubs.push(c);
           }
           //const foundClubs = clubs.filter((el, index) => r.map(e => e[1] === index)).forEach(element => getClubInfo(element));
           resolve(foundClubs);
