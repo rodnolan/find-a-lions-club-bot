@@ -13,7 +13,7 @@ const
     Promise: Promise,
     key: config.get('googleAPIKey')
   }),
-  imageAPI = require('google-maps-image-api');
+  imageAPI = require('google-maps-image-api-url');
 
 var db;
 var app = express();
@@ -483,14 +483,18 @@ function getGenericTemplates(recipientId, requestForHelpOnFeature) {
       id: recipientId
     },
     message: {
-      attachment: {
-        type: "template",
-        payload: {
-          template_type: "generic",
-          elements: templateElements
+      type: "element_share",
+      share_contents: {
+        attachment: {
+          type: "template",
+          payload: {
+            template_type: "generic",
+            elements: templateElements
+          }
         }
       }
     }
+
   };
 
   return messageData;
@@ -699,9 +703,9 @@ function compileAddressString(addressObj) {
 function getMultipleGenericTemplates(recipientId, clubObjects) {
 
   var messages = [];
-  
+
   for (const clubObject of clubObjects) {
-    var btns = []; 
+    var btns = [];
     var defaultAction = null;
 
     if (clubObject.website) {
@@ -723,15 +727,15 @@ function getMultipleGenericTemplates(recipientId, clubObjects) {
         payload: clubObject.membershipContact.phone
       });
     }
-   
-    
+
+
     var messageData = {
       title: clubObject.clubName,
       image_url: clubObject.imageUrl,
-      subtitle: "Meetings at " + compileAddressString(clubObject.meetings.address),
+      subtitle: compileAddressString(clubObject.meetings.address),
       buttons: btns
     }
-    if(defaultAction) {
+    if (defaultAction) {
       messageData.default_action = defaultAction;
     }
     messages.push(messageData);
@@ -838,9 +842,8 @@ function parseAddressToString(addressObj) {
 //parse longitude and latitude
 function getGeocodeLocation(data) {
   if (data.geometry) {
-  return data.geometry.location;
-  }
-  else {
+    return data.geometry.location;
+  } else {
     return '';
   }
 }
@@ -864,24 +867,11 @@ function getClubInfo(obj) {
  * @param {club's location string as 'lon,lat'} clubLocationString 
  */
 function getMapImageUrl(clientLocationString, clubLocationString) {
-  // return new Promise((resolve, reject) => {
-  //   const url = `https://maps.googleapis.com/maps/api/staticmap?size=400x400&maptype=roadmap\
-  //               &markers=size:mid%7Ccolor:blue%7C${clientLocationString}
-  //               &markers=size:mid%7Ccolor:red%7C${clubLocationString}&key=AIzaSyB1oiTbcdi8aCCklhQggQ92LKsNr5HQ2LA`;
-  //   request({ uri: url }, (error, response, body) => {
-  //       if (!error && response.statusCode == 200) {
-  //         resolve(body);
-  //       }
-  //       else {
-  //         reject(error);
-  //       }
-  //   });
-  // });
   return imageAPI({
     center: '',
     key: GOOGLE_API_KEY,
     type: 'staticmap',
-    size: '400x400',
+    size: '573x300',//'500x260',
     maptype: 'roadmap',
     format: 'PNG',
     markers: [`size:mid|color:blue|${clientLocationString}`, `size:mid|color:red|${clubLocationString}`],
