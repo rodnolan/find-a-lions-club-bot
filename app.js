@@ -6,7 +6,7 @@ const
   config = require('config'),
   crypto = require('crypto'),
   express = require('express'),
-  https = require('https'),
+  // https = require('https'),
   request = require('request'),
   mongoClient = require('mongodb').MongoClient,
   googleMapsClient = require('@google/maps').createClient({
@@ -18,18 +18,14 @@ const
 var db;
 var app = express();
 app.set('port', 5000);
-//cle
 app.use(bodyParser.json({
   verify: verifyRequestSignature
 }));
-//app.use(express.static('public'));
 
 
 /*
  * Open config/default.json and set your config values before running this server.
- * You can restart the *node server* without reconfiguring anything. However, whenever 
- * you restart *ngrok* you will receive a new random url, so you must revalidate your 
- * webhook url in your App Dashboard.
+ * 
  */
 
 // App Dashboard > Dashboard > click the Show button in the App Secret field
@@ -45,20 +41,16 @@ const PAGE_ACCESS_TOKEN = config.get('pageAccessToken');
 const MONGO_DB_URL = config.get('mongoURL');
 
 //how many closest clubs to return
-const CLUBS_NUM = config.get('closestClubsToReturn');
+const CLUBS_NUM = config.get('closestClubsToReturn') || 5;
 
 const GOOGLE_API_KEY = config.get('googleAPIKey');
 
-// In an early version of this bot, the images were served from the local public/ folder.
-// Using an ngrok.io domain to serve images is no longer supported by the Messenger Platform.
-// Github Pages provides a simple image hosting solution (and it's free)
-const IMG_BASE_PATH = 'https://rodnolan.github.io/posterific-static-images/';
 
 // make sure that everything has been properly configured
-if (!(APP_SECRET && VALIDATION_TOKEN && PAGE_ACCESS_TOKEN)) {
+if (!(APP_SECRET && VALIDATION_TOKEN && PAGE_ACCESS_TOKEN && MONGO_DB_URL && CLUBS_NUM && GOOGLE_API_KEY)) {
   console.error("Missing config values");
   process.exit(1);
-}
+} 
 
 /*
  * Verify that the request came from Facebook. You should expect a hash of 
@@ -172,7 +164,9 @@ function processPostbackMessage(event) {
   if (payload === 'Get Started') {
     sendHelpOptionsAsQuickReplies(senderID);
   } else {
-    respondToHelpRequest(senderID, payload);
+    // in the original implementation, all the buttons in the generic template were postback buttons
+    // since that code is no longer executed, this is not needed anymore
+    //respondToHelpRequest(senderID, payload);
   }
 }
 
@@ -249,7 +243,7 @@ async function processMessageFromPage(event) {
 }
 
 /*
- * Send a message with the four Quick Reply buttons 
+ * Send a message with the two Quick Reply buttons for Postal Code and Location
  * 
  */
 function sendHelpOptionsAsQuickReplies(recipientId) {
@@ -277,7 +271,7 @@ function sendHelpOptionsAsQuickReplies(recipientId) {
 }
 
 /*
- * user tapped a Quick Reply button; respond with the appropriate content
+ * user tapped a Quick Reply button; respond with the appropriate followup request
  * 
  */
 function handleQuickReplyResponse(event) {
@@ -324,28 +318,9 @@ function requestUsersLocation(senderID) {
       quick_replies: [{
         content_type: "location"
       }]
-
     }
   };
   callSendAPI(messageData);
-}
-
-function respondToHelpRequest(senderID, payload) {
-  // set useGenericTemplates to false to send image attachments instead of generic templates
-  var useGenericTemplates = true;
-  var messageData;
-
-  if (useGenericTemplates) {
-    // respond to the sender's help request by presenting a carousel-style 
-    // set of screenshots of the application in action 
-    // each response includes all the content for the requested feature
-    messageData = getGenericTemplates(senderID, payload);
-  } else {
-    messageData = getImageAttachments(senderID, payload);
-  }
-  if (messageData) {
-    callSendAPI(messageData);
-  }
 }
 
 /*
@@ -500,201 +475,6 @@ function getGenericTemplates(recipientId, requestForHelpOnFeature) {
   return messageData;
 }
 
-/*
- * This response uses image attachments to illustrate each step of each feature.
- * This is less flexible because you are limited in the number of options you can
- * provide for the user. This technique is best for cases where the content should
- * be consumed in a strict linear order.
- *
- */
-function getImageAttachments(recipientId, helpRequestType) {
-  var textToSend = '';
-  var quickReplies = [{
-      "content_type": "text",
-      "title": "Restart",
-      "payload": "QR_RESTART"
-    }, // this option should always be present because it allows the user to start over
-    {
-      "content_type": "text",
-      "title": "Continue",
-      "payload": ""
-    } // the Continue option only makes sense if there is more content to show 
-    // remove this option when you are at the end of a branch in the content tree
-    // i.e.: when you are showing the last message for the selected feature
-  ];
-
-  // to send an image attachment in a message, just set the payload property of this attachment object
-  // if the payload property is defined, this will be added to the message before it is sent
-  var attachment = {
-    "type": "image",
-    "payload": ""
-  };
-
-  switch (helpRequestType) {
-    case 'QR_RESTART':
-      sendHelpOptionsAsQuickReplies(recipientId);
-      return;
-      break;
-
-      // the Rotation feature
-    case 'QR_ROTATION_1':
-      textToSend = 'Click the Rotate button to toggle the poster\'s orientation between landscape and portrait mode.';
-      quickReplies[1].payload = "QR_ROTATION_2";
-      break;
-    case 'QR_ROTATION_2':
-      // 1 of 2 (portrait, landscape)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "01-rotate-landscape.png"
-      }
-      quickReplies[1].payload = "QR_ROTATION_3";
-      break;
-    case 'QR_ROTATION_3':
-      // 2 of 2 (portrait, landscape)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "02-rotate-portrait.png"
-      }
-      quickReplies.pop();
-      quickReplies[0].title = "Explore another feature";
-      break;
-      // the Rotation feature
-
-
-      // the Photo feature
-    case 'QR_PHOTO_1':
-      textToSend = 'Click the Photo button to select an image to use on your poster. We recommend visiting https://unsplash.com/random from your device to seed your Downloads folder with some images before you get started.';
-      quickReplies[1].payload = "QR_PHOTO_2";
-      break;
-    case 'QR_PHOTO_2':
-      // 1 of 3 (placeholder image, Downloads folder, poster with image)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "03-photo-hover.png"
-      }
-      quickReplies[1].payload = "QR_PHOTO_3";
-      break;
-    case 'QR_PHOTO_3':
-      // 2 of 3 (placeholder image, Downloads folder, poster with image)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "04-photo-list.png"
-      }
-      quickReplies[1].payload = "QR_PHOTO_4";
-      break;
-    case 'QR_PHOTO_4':
-      // 3 of 3 (placeholder image, Downloads folder, poster with image)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "05-photo-selected.png"
-      }
-      quickReplies.pop();
-      quickReplies[0].title = "Explore another feature";
-      break;
-      // the Photo feature
-
-
-      // the Caption feature
-    case 'QR_CAPTION_1':
-      textToSend = 'Click the Text button to set the caption that appears at the bottom of the poster.';
-      quickReplies[1].payload = "QR_CAPTION_2";
-      break;
-    case 'QR_CAPTION_2':
-      // 1 of 4 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "06-text-hover.png"
-      }
-      quickReplies[1].payload = "QR_CAPTION_3";
-      break;
-    case 'QR_CAPTION_3':
-      // 2 of 4: (hover, entering caption, mid-edit, poster with new caption
-      attachment.payload = {
-        url: IMG_BASE_PATH + "07-text-mid-entry.png"
-      }
-      quickReplies[1].payload = "QR_CAPTION_4";
-      break;
-    case 'QR_CAPTION_4':
-      // 3 of 4 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "08-text-entry-done.png"
-      }
-      quickReplies[1].payload = "QR_CAPTION_5";
-      break;
-    case 'QR_CAPTION_5':
-      // 4 of 4 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "09-text-complete.png"
-      }
-      quickReplies.pop();
-      quickReplies[0].title = "Explore another feature";
-      break;
-      // the Caption feature
-
-
-
-      // the Color Picker feature
-    case 'QR_BACKGROUND_1':
-      textToSend = 'Click the Background button to select a background color for your poster.';
-      quickReplies[1].payload = "QR_BACKGROUND_2";
-      break;
-    case 'QR_BACKGROUND_2':
-      // 1 of 5 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "10-background-picker-hover.png"
-      }
-      quickReplies[1].payload = "QR_BACKGROUND_3";
-      break;
-    case 'QR_BACKGROUND_3':
-      // 2 of 5 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "11-background-picker-appears.png"
-      }
-      quickReplies[1].payload = "QR_BACKGROUND_4";
-      break;
-    case 'QR_BACKGROUND_4':
-      // 3 of 5 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "12-background-picker-selection.png"
-      }
-      quickReplies[1].payload = "QR_BACKGROUND_5";
-      break;
-    case 'QR_BACKGROUND_5':
-      // 4 of 5 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "13-background-picker-selection-made.png"
-      }
-      quickReplies[1].payload = "QR_BACKGROUND_6";
-      break;
-    case 'QR_BACKGROUND_6':
-      // 5 of 5 (hover, entering caption, mid-edit, poster with new caption)
-      attachment.payload = {
-        url: IMG_BASE_PATH + "14-background-changed.png"
-      }
-      quickReplies.pop();
-      quickReplies[0].title = "Explore another feature";
-      break;
-      // the Color Picker feature
-
-    default:
-      sendHelpOptionsAsQuickReplies(recipientId);
-      return;
-
-      break;
-  }
-
-  var messageData = {
-    recipient: {
-      id: recipientId
-    },
-    message: {
-      text: textToSend,
-      quick_replies: quickReplies
-    },
-  };
-  if (attachment.payload !== "") {
-    messageData.message.attachment = attachment;
-    // text can not be specified when you're sending an attachment
-    delete messageData.message.text;
-  }
-
-  return messageData;
-}
-
 function compileAddressString(addressObj) {
   return `${addressObj.streetNumber} ${addressObj.streetName}, 
   ${addressObj.city}, ${addressObj.province} ${addressObj.postal}`;
@@ -835,9 +615,9 @@ function callGeocode(paramObj) {
   return googleMapsClient.geocode(paramObj).asPromise();
 }
 
-function parseAddressToString(addressObj) {
-  return `${addressObj.streetNumber} ${addressObj.streetName}, ${addressObj.city}, ${addressObj.province}`;
-}
+// function parseAddressToString(addressObj) {
+//   return `${addressObj.streetNumber} ${addressObj.streetName}, ${addressObj.city}, ${addressObj.province}`;
+// }
 
 //parse longitude and latitude
 function getGeocodeLocation(data) {
@@ -852,13 +632,13 @@ function callDistanceMatrix(query) {
   return googleMapsClient.distanceMatrix(query).asPromise();
 }
 
-function getClubInfo(obj) {
-  const result = `${obj.clubName}
-  ${obj.meetings.address.streetNumber} ${obj.meetings.address.streetName}, 
-  ${obj.meetings.address.city}, ${obj.meetings.address.province}, 
-  ${obj.meetings.address.postal}\n`;
-  return result;
-}
+// function getClubInfo(obj) {
+//   const result = `${obj.clubName}
+//   ${obj.meetings.address.streetNumber} ${obj.meetings.address.streetName}, 
+//   ${obj.meetings.address.city}, ${obj.meetings.address.province}, 
+//   ${obj.meetings.address.postal}\n`;
+//   return result;
+// }
 
 /**
  * make a call to Maps Static API and returns a PNG image url
