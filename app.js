@@ -26,6 +26,7 @@ app.use(bodyParser.json({
 }));
 
 
+
 /*
  * Open config/default.json and set your config values before running this server.
  * 
@@ -48,12 +49,11 @@ const CLUBS_NUM = config.get('closestClubsToReturn') || 5;
 
 const GOOGLE_API_KEY = config.get('googleAPIKey');
 
-
 // make sure that everything has been properly configured
 if (!(APP_SECRET && VALIDATION_TOKEN && PAGE_ACCESS_TOKEN && MONGO_DB_URL && CLUBS_NUM && GOOGLE_API_KEY)) {
   console.error("Missing config values");
   process.exit(1);
-} 
+}
 
 /*
  * Verify that the request came from Facebook. You should expect a hash of 
@@ -169,11 +169,22 @@ function processPostbackMessage(event) {
   }
 }
 
+async function respondWithClosestClubs(senderID, messageText, regionCode, coordinates) {
+  try {
+    const clubs = await getClosestClubs(messageText, coordinates, regionCode);
+    sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
+    sendGenericTemplates(senderID, clubs);
+  } catch (err) {
+    console.log(err);
+    sendTextMessage(senderID, err);
+  }
+}
+
 /*
  * Called when a message is sent to your page. 
  * 
  */
-async function processMessageFromPage(event) {
+function processMessageFromPage(event) {
   var senderID = event.sender.id;
   var pageID = event.recipient.id;
   var timeOfMessage = event.timestamp;
@@ -197,26 +208,20 @@ async function processMessageFromPage(event) {
     console.log("[processMessageFromPage]: %s", messageText);
     var lowerCaseMsg = messageText.toLowerCase();
     if (lowerCaseMsg === 'help') {
-
       // handle 'help' as a special case
       sendHelpOptionsAsQuickReplies(senderID);
 
     } else if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
 
       // handle postal code
-      const clubs = await getClosestClubs(messageText, null, 'ca');
-      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
-      sendGenericTemplates(senderID, clubs);
+      respondWithClosestClubs(senderID, messageText, 'ca', null);
 
     } else if (messageText.match(zipCodeRegex)) {
 
       //us zip code so restrict and search for provided location in US
-      const clubs = await getClosestClubs(messageText, null, 'us');
-      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
-      sendGenericTemplates(senderID, clubs);
+      respondWithClosestClubs(senderID, messageText, 'us', null);
 
     } else {
-
       // the user sent a message we're not prepared to handle
       var msg = 'I\'m only capable of responding to one plain text word and that word is \'help\'';
       sendTextMessage(senderID, msg);
@@ -230,10 +235,7 @@ async function processMessageFromPage(event) {
     if (att && att.type === 'location') {
       //got location attachment
       const coordinates = att.payload.coordinates;
-      const clubs = await await getClosestClubs(null, coordinates);
-      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
-
-      sendGenericTemplates(senderID, clubs);
+      respondWithClosestClubs(senderID, null, null, coordinates);
     }
   }
 }
@@ -647,7 +649,7 @@ function getMapImageUrl(clientLocationString, clubLocationString) {
     center: '',
     key: GOOGLE_API_KEY,
     type: 'staticmap',
-    size: '573x300',//'500x260',
+    size: '573x300', //'500x260',
     maptype: 'roadmap',
     format: 'PNG',
     markers: [`size:mid|color:blue|${clientLocationString}`, `size:mid|color:red|${clubLocationString}`],
@@ -664,9 +666,13 @@ async function getCoordinates(addr, regionCode) {
     console.log(response.error_message);
     return '';
   } else {
-    const geoData = response.json.results[0];
-    const originLonLat = getGeocodeLocation(geoData);
-    return originLonLat.lat + ',' + originLonLat.lng;
+    if (response.json.results.length > 0) {
+      const geoData = response.json.results[0];
+      const originLonLat = getGeocodeLocation(geoData);
+      return originLonLat.lat + ',' + originLonLat.lng;
+    } else {
+      return '';
+    }
   }
 }
 
@@ -676,7 +682,7 @@ async function getCoordinates(addr, regionCode) {
  * if providing coordinates, it will be used straigh without checking Google API Geocode
  * regionCode, if provided, restricts geocoding to that region
  */
-function getClosestClubs(address, coordinates, regionCode) {
+async function getClosestClubs(address, coordinates, regionCode) {
   return new Promise(async (resolve, reject) => {
 
     try {
@@ -688,53 +694,56 @@ function getClosestClubs(address, coordinates, regionCode) {
       } else {
         origin = await getCoordinates(address, regionCode);
       }
-
-      const clubs = await db.collection('clubs').find().toArray();
-      const locations = clubs.map(item =>
-        item.meetings.address.location.lat + ',' + item.meetings.address.location.lng
-      );
-
-      const query = {
-        origins: [origin],
-        destinations: locations
-      };
-
-      const distResponse = await callDistanceMatrix(query);
-
-      if (distResponse.status !== 200) {
-        reject(distResponse.error_message);
+      if (origin === '') {
+        reject('Could not determine your location, please make sure the postal code is correct or full');
       } else {
+        const clubs = await db.collection('clubs').find().toArray();
+        const locations = clubs.map(item =>
+          item.meetings.address.location.lat + ',' + item.meetings.address.location.lng
+        );
 
-        const result = distResponse.json;
-        if (result.status !== 'OK') {
-          reject(result.error_message);
+        const query = {
+          origins: [origin],
+          destinations: locations
+        };
+
+        const distResponse = await callDistanceMatrix(query);
+
+        if (distResponse.status !== 200) {
+          console.log(distResponse.error_message);
+          reject("There was a problem determining distance from you to closest clubs");
         } else {
+          const result = distResponse.json;
+          if (result.status !== 'OK') {
+            console.log(result.error_message);
+            reject("Something went wrong, please give it a try in a minute");
+          } else {
 
-          const returnedElements = result.rows[0].elements;
-          const distancesToSort = returnedElements.map((el, index) => [el.distance.value, index]);
-          distancesToSort.sort((a, b) => a[0] - b[0]);
-          const requiredIndexedDistances = distancesToSort.slice(0, CLUBS_NUM);
-          let foundClubs = [];
-          for (let i = 0; i < requiredIndexedDistances.length; i++) {
-            const c = clubs[requiredIndexedDistances[i][1]];
-            let img = '';
-            try {
-              img = await getMapImageUrl(origin, `${c.meetings.address.location.lat},${c.meetings.address.location.lng}`);
-              console.log(img);
-            } catch (err) {
-              console.log(err);
+            const returnedElements = result.rows[0].elements;
+            const distancesToSort = returnedElements.map((el, index) => [el.distance.value, index]);
+            distancesToSort.sort((a, b) => a[0] - b[0]);
+            const requiredIndexedDistances = distancesToSort.slice(0, CLUBS_NUM);
+            let foundClubs = [];
+            for (let i = 0; i < requiredIndexedDistances.length; i++) {
+              const c = clubs[requiredIndexedDistances[i][1]];
+              let img = '';
+              try {
+                img = await getMapImageUrl(origin, `${c.meetings.address.location.lat},${c.meetings.address.location.lng}`);
+                console.log(img);
+              } catch (err) {
+                console.log(err);
+              }
+              c.imageUrl = img;
+              foundClubs.push(c);
             }
-            c.imageUrl = img;
-            foundClubs.push(c);
+            //const foundClubs = clubs.filter((el, index) => r.map(e => e[1] === index)).forEach(element => getClubInfo(element));
+            resolve(foundClubs);
           }
-          //const foundClubs = clubs.filter((el, index) => r.map(e => e[1] === index)).forEach(element => getClubInfo(element));
-          resolve(foundClubs);
         }
       }
-
     } catch (err) {
       console.log(err);
-      reject(err);
+      reject("Something went terribly wrong. Apologies");
     }
   });
 }
