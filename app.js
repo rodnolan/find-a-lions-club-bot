@@ -46,12 +46,16 @@ const CLUBS_NUM = config.get('closestClubsToReturn') || 5;
 
 const GOOGLE_API_KEY = config.get('googleAPIKey');
 
+const fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/,
+  partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/,
+  zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
+
 
 // make sure that everything has been properly configured
 if (!(APP_SECRET && VALIDATION_TOKEN && PAGE_ACCESS_TOKEN && MONGO_DB_URL && CLUBS_NUM && GOOGLE_API_KEY)) {
   console.error("Missing config values");
   process.exit(1);
-} 
+}
 
 /*
  * Verify that the request came from Facebook. You should expect a hash of 
@@ -171,15 +175,14 @@ function processPostbackMessage(event) {
   }
 }
 
-function respondWithClosestClubs(senderID, messageText, regionCode, coordinates) {
+async function respondWithClosestClubs(senderID, messageText, regionCode, coordinates) {
   try {
     const clubs = await getClosestClubs(messageText, coordinates, regionCode);
     sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
     sendGenericTemplates(senderID, clubs);
-  }
-  catch(err){
+  } catch (err) {
     console.log(err);
-    sendTextMessage(senderID, 'Sorry, an error occured, please try again');
+    sendTextMessage(senderID, err);
   }
 }
 
@@ -187,7 +190,7 @@ function respondWithClosestClubs(senderID, messageText, regionCode, coordinates)
  * Called when a message is sent to your page. 
  * 
  */
-async function processMessageFromPage(event) {
+function processMessageFromPage(event) {
   var senderID = event.sender.id;
   var pageID = event.recipient.id;
   var timeOfMessage = event.timestamp;
@@ -217,9 +220,6 @@ async function processMessageFromPage(event) {
 
       default:
         //check if postal code was entered
-        var fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/;
-        var partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/;
-        var zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
         if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
 
           respondWithClosestClubs(senderID, messageText, 'ca', null);
@@ -655,7 +655,7 @@ function getMapImageUrl(clientLocationString, clubLocationString) {
     center: '',
     key: GOOGLE_API_KEY,
     type: 'staticmap',
-    size: '573x300',//'500x260',
+    size: '573x300', //'500x260',
     maptype: 'roadmap',
     format: 'PNG',
     markers: [`size:mid|color:blue|${clientLocationString}`, `size:mid|color:red|${clubLocationString}`],
@@ -688,7 +688,7 @@ async function getCoordinates(addr, regionCode) {
  * if providing coordinates, it will be used straigh without checking Google API Geocode
  * regionCode, if provided, restricts geocoding to that region
  */
-function getClosestClubs(address, coordinates, regionCode) {
+async function getClosestClubs(address, coordinates, regionCode) {
   return new Promise(async (resolve, reject) => {
 
     try {
@@ -701,9 +701,8 @@ function getClosestClubs(address, coordinates, regionCode) {
         origin = await getCoordinates(address, regionCode);
       }
       if (origin === '') {
-        reject('Could not determine your location, please make sure the postal code is correct');
+        reject('Could not determine your location, please make sure the postal code is correct or full');
       } else {
-
         const clubs = await db.collection('clubs').find().toArray();
         const locations = clubs.map(item =>
           item.meetings.address.location.lat + ',' + item.meetings.address.location.lng
@@ -717,12 +716,13 @@ function getClosestClubs(address, coordinates, regionCode) {
         const distResponse = await callDistanceMatrix(query);
 
         if (distResponse.status !== 200) {
-          reject(distResponse.error_message);
+          console.log(distResponse.error_message);
+          reject("There was a problem determining distance from you to closest clubs");
         } else {
-
           const result = distResponse.json;
           if (result.status !== 'OK') {
-            reject(result.error_message);
+            console.log(result.error_message);           
+            reject("Something went wrong, please give it a try in a minute");
           } else {
 
             const returnedElements = result.rows[0].elements;
@@ -749,7 +749,7 @@ function getClosestClubs(address, coordinates, regionCode) {
       }
     } catch (err) {
       console.log(err);
-      reject(err);
+      reject("Something went terribly wrong. Apologies");
     }
   });
 }
