@@ -223,7 +223,8 @@ async function processMessageFromPage(event) {
 
         } else {
           // otherwise, just echo it back to the sender
-          sendTextMessage(senderID, messageText);
+          var msg = 'I\'m only capable of responding to one plain text word and that word is \'help\'';
+          sendTextMessage(senderID, msg);
         }
     }
   }
