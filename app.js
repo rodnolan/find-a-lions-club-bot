@@ -13,7 +13,10 @@ const
     Promise: Promise,
     key: config.get('googleAPIKey')
   }),
-  imageAPI = require('google-maps-image-api-url');
+  imageAPI = require('google-maps-image-api-url'),
+  fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/,
+  partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/,
+  zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
 
 var db;
 var app = express();
@@ -163,10 +166,6 @@ function processPostbackMessage(event) {
     senderID, recipientID, payload, timeOfPostback);
   if (payload === 'Get Started') {
     sendHelpOptionsAsQuickReplies(senderID);
-  } else {
-    // in the original implementation, all the buttons in the generic template were postback buttons
-    // since that code is no longer executed, this is not needed anymore
-    //respondToHelpRequest(senderID, payload);
   }
 }
 
@@ -184,6 +183,7 @@ async function processMessageFromPage(event) {
     senderID, pageID, timeOfMessage, JSON.stringify(message));
 
   if (message.quick_reply) {
+    // user tapped one of the two quick reply buttons: Postal Code or Send Location
     console.log("[processMessageFromPage] quick_reply.payload (%s)",
       message.quick_reply.payload);
     handleQuickReplyResponse(event);
@@ -196,37 +196,32 @@ async function processMessageFromPage(event) {
   if (messageText) {
     console.log("[processMessageFromPage]: %s", messageText);
     var lowerCaseMsg = messageText.toLowerCase();
-    switch (lowerCaseMsg) {
-      case 'help':
-        // handle 'help' as a special case
-        sendHelpOptionsAsQuickReplies(senderID);
-        break;
+    if (lowerCaseMsg === 'help') {
 
-      default:
-        //check if postal code was entered
-        var fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/;
-        var partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/;
-        var zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
-        if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
+      // handle 'help' as a special case
+      sendHelpOptionsAsQuickReplies(senderID);
 
-          const clubs = await getClosestClubs(messageText, null, 'ca');
-          sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
-          sendGenericTemplates(senderID, clubs);
+    } else if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
 
-        } else if (messageText.match(zipCodeRegex)) {
-          //us zip code so restrict and search for provided location in US
-          const clubs = await getClosestClubs(messageText, null, 'us');
-          sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
+      // handle postal code
+      const clubs = await getClosestClubs(messageText, null, 'ca');
+      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
+      sendGenericTemplates(senderID, clubs);
 
-          sendGenericTemplates(senderID, clubs);
+    } else if (messageText.match(zipCodeRegex)) {
 
+      //us zip code so restrict and search for provided location in US
+      const clubs = await getClosestClubs(messageText, null, 'us');
+      sendTextMessage(senderID, `Here are the ${CLUBS_NUM} closest clubs: \n`);
+      sendGenericTemplates(senderID, clubs);
 
-        } else {
-          // otherwise, just echo it back to the sender
-          var msg = 'I\'m only capable of responding to one plain text word and that word is \'help\'';
-          sendTextMessage(senderID, msg);
-        }
+    } else {
+
+      // the user sent a message we're not prepared to handle
+      var msg = 'I\'m only capable of responding to one plain text word and that word is \'help\'';
+      sendTextMessage(senderID, msg);
     }
+
   }
 
   if (message.attachments && message.attachments.length > 0) {
