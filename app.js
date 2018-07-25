@@ -13,7 +13,10 @@ const
     Promise: Promise,
     key: config.get('googleAPIKey')
   }),
-  imageAPI = require('google-maps-image-api-url');
+  imageAPI = require('google-maps-image-api-url'),
+  fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/,
+  partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/,
+  zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
 
 var db;
 var app = express();
@@ -45,11 +48,6 @@ const MONGO_DB_URL = config.get('mongoURL');
 const CLUBS_NUM = config.get('closestClubsToReturn') || 5;
 
 const GOOGLE_API_KEY = config.get('googleAPIKey');
-
-const fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/,
-  partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/,
-  zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
-
 
 // make sure that everything has been properly configured
 if (!(APP_SECRET && VALIDATION_TOKEN && PAGE_ACCESS_TOKEN && MONGO_DB_URL && CLUBS_NUM && GOOGLE_API_KEY)) {
@@ -168,10 +166,6 @@ function processPostbackMessage(event) {
     senderID, recipientID, payload, timeOfPostback);
   if (payload === 'Get Started') {
     sendHelpOptionsAsQuickReplies(senderID);
-  } else {
-    // in the original implementation, all the buttons in the generic template were postback buttons
-    // since that code is no longer executed, this is not needed anymore
-    //respondToHelpRequest(senderID, payload);
   }
 }
 
@@ -200,6 +194,7 @@ function processMessageFromPage(event) {
     senderID, pageID, timeOfMessage, JSON.stringify(message));
 
   if (message.quick_reply) {
+    // user tapped one of the two quick reply buttons: Postal Code or Send Location
     console.log("[processMessageFromPage] quick_reply.payload (%s)",
       message.quick_reply.payload);
     handleQuickReplyResponse(event);
@@ -212,27 +207,26 @@ function processMessageFromPage(event) {
   if (messageText) {
     console.log("[processMessageFromPage]: %s", messageText);
     var lowerCaseMsg = messageText.toLowerCase();
-    switch (lowerCaseMsg) {
-      case 'help':
-        // handle 'help' as a special case
-        sendHelpOptionsAsQuickReplies(senderID);
-        break;
+    if (lowerCaseMsg === 'help') {
+      // handle 'help' as a special case
+      sendHelpOptionsAsQuickReplies(senderID);
 
-      default:
-        //check if postal code was entered
-        if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
+    } else if (messageText.match(partialPostalRegex) || messageText.match(fullPostalRegex)) {
 
-          respondWithClosestClubs(senderID, messageText, 'ca', null);
+      // handle postal code
+      respondWithClosestClubs(senderID, messageText, 'ca', null);
 
-        } else if (messageText.match(zipCodeRegex)) {
-          //us zip code so restrict and search for provided location in US
-          respondWithClosestClubs(senderID, messageText, 'us', null);
+    } else if (messageText.match(zipCodeRegex)) {
 
-        } else {
-          // otherwise, just echo it back to the sender
-          sendTextMessage(senderID, messageText);
-        }
+      //us zip code so restrict and search for provided location in US
+      respondWithClosestClubs(senderID, messageText, 'us', null);
+
+    } else {
+      // the user sent a message we're not prepared to handle
+      var msg = 'I\'m only capable of responding to one plain text word and that word is \'help\'';
+      sendTextMessage(senderID, msg);
     }
+
   }
 
   if (message.attachments && message.attachments.length > 0) {
@@ -721,7 +715,7 @@ async function getClosestClubs(address, coordinates, regionCode) {
         } else {
           const result = distResponse.json;
           if (result.status !== 'OK') {
-            console.log(result.error_message);           
+            console.log(result.error_message);
             reject("Something went wrong, please give it a try in a minute");
           } else {
 
