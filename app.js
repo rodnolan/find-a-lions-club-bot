@@ -128,6 +128,8 @@ app.post('/webhook', function (req, res) {
         let propertyNames = Object.keys(messagingEvent);
         console.log("[app.post] Webhook event props: ", propertyNames.join());
 
+        acknowledgeUserMessage(messagingEvent.sender.id);
+
         if (messagingEvent.message) {
           processMessageFromPage(messagingEvent);
         } else if (messagingEvent.postback) {
@@ -136,7 +138,7 @@ app.post('/webhook', function (req, res) {
         } else {
           console.log("[app.post] not prepared to handle this message type.");
         }
-
+        sendSenderAction(messagingEvent.sender.id, "typing_off");
       });
     });
 
@@ -558,6 +560,28 @@ function sendTextMessage(recipientId, messageText) {
     }
   };
   console.log("[sendTextMessage] %s", JSON.stringify(messageData));
+  callSendAPI(messageData);
+}
+
+
+/** As a best practice to send an acknowledgement 
+ * to user for their message
+ */
+function acknowledgeUserMessage(recipientId) {
+  //to show that user's message was seen
+  sendSenderAction(recipientId, "mark_seen");
+  //to show that the message is being responded to
+  sendSenderAction(recipientId, "typing_on");
+}
+
+function sendSenderAction(recipientId, senderAction) {
+  var messageData = {
+    recipient: {
+      id: recipientId
+    },
+    sender_action: senderAction
+  };
+  console.log("[sendSenderAction] %s", JSON.stringify(messageData));
   callSendAPI(messageData);
 }
 
