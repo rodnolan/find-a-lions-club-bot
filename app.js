@@ -16,7 +16,8 @@ const
   imageAPI = require('google-maps-image-api-url'),
   fullPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/,
   partialPostalRegex = /^[A-Za-z]\d[A-Za-z][ -]?$/,
-  zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/;
+  zipCodeRegex = /^\d{5}(?:[-\s]\d{4})?$/,
+  messengerCodeImageURL = `https://scontent.xx.fbcdn.net/v/t39.8917-6/37868236_2203452356350570_8032674598367526912_n.png?_nc_cat=0&oh=aa1fac33ba973687d31b756b278f36ca&oe=5BC77E17`;
 
 var db;
 var app = express();
@@ -169,6 +170,39 @@ function processPostbackMessage(event) {
   if (payload === 'Get Started') {
     sendHelpOptionsAsQuickReplies(senderID);
   }
+  else if (payload.indexOf('clubId:') > -1) {
+    const clubName = payload.split(':')[1];
+    sendMoreDetailsTemplate(senderID, clubName);
+  }
+}
+
+async function getClub(clubName) {
+  const club = await db.collection('clubs').findOne({ clubName: { $eq: clubName } });
+  return club;
+}
+
+async function sendMoreDetailsTemplate(recipientId, clubName) {
+
+  const club = await getClub(clubName);
+  console.log(JSON.stringify(club));
+  var messageData = {
+    recipient: {
+      id: recipientId
+    },
+    message: {
+      attachment: {
+        type: "template",
+        payload: {
+          template_type: "generic",
+          elements: [
+            {
+
+            }
+          ]
+        }
+      }
+    }
+  };
 }
 
 async function respondWithClosestClubs(senderID, messageText, regionCode, coordinates) {
@@ -323,158 +357,6 @@ function requestUsersLocation(senderID) {
   callSendAPI(messageData);
 }
 
-/*
- * This response uses templateElements to present the user with a carousel
- * You send ALL of the content for the selected feature and they swipe 
- * left and right to see it
- *
- */
-function getGenericTemplates(recipientId, requestForHelpOnFeature) {
-  console.log("[getGenericTemplates] handling help request for %s", requestForHelpOnFeature);
-  var templateElements = [];
-  var sectionButtons = [];
-  // each button must be of type postback but title
-  // and payload are variable depending on which 
-  // set of options you want to provide
-  var addSectionButton = function (title, payload) {
-    sectionButtons.push({
-      type: 'postback',
-      title: title,
-      payload: payload
-    });
-  }
-
-  // Since there are only four options in total, we will provide 
-  // buttons for each of the remaining three with each section. 
-  // This provides the user with maximum flexibility to navigate
-
-  switch (requestForHelpOnFeature) {
-    case 'QR_ROTATION_1':
-      addSectionButton('Photo', 'QR_PHOTO_1');
-      addSectionButton('Caption', 'QR_CAPTION_1');
-      addSectionButton('Background', 'QR_BACKGROUND_1');
-
-      templateElements.push({
-        title: "Rotation",
-        subtitle: "portrait mode",
-        image_url: IMG_BASE_PATH + "01-rotate-landscape.png",
-        buttons: sectionButtons
-      }, {
-        title: "Rotation",
-        subtitle: "landscape mode",
-        image_url: IMG_BASE_PATH + "02-rotate-portrait.png",
-        buttons: sectionButtons
-      });
-      break;
-    case 'QR_PHOTO_1':
-      addSectionButton('Rotation', 'QR_ROTATION_1');
-      addSectionButton('Caption', 'QR_CAPTION_1');
-      addSectionButton('Background', 'QR_BACKGROUND_1');
-
-      templateElements.push({
-        title: "Photo Picker",
-        subtitle: "click to start",
-        image_url: IMG_BASE_PATH + "03-photo-hover.png",
-        buttons: sectionButtons
-      }, {
-        title: "Photo Picker",
-        subtitle: "Downloads folder",
-        image_url: IMG_BASE_PATH + "04-photo-list.png",
-        buttons: sectionButtons
-      }, {
-        title: "Photo Picker",
-        subtitle: "photo selected",
-        image_url: IMG_BASE_PATH + "05-photo-selected.png",
-        buttons: sectionButtons
-      });
-      break;
-    case 'QR_CAPTION_1':
-      addSectionButton('Rotation', 'QR_ROTATION_1');
-      addSectionButton('Photo', 'QR_PHOTO_1');
-      addSectionButton('Background', 'QR_BACKGROUND_1');
-
-      templateElements.push({
-        title: "Caption",
-        subtitle: "click to start",
-        image_url: IMG_BASE_PATH + "06-text-hover.png",
-        buttons: sectionButtons
-      }, {
-        title: "Caption",
-        subtitle: "enter text",
-        image_url: IMG_BASE_PATH + "07-text-mid-entry.png",
-        buttons: sectionButtons
-      }, {
-        title: "Caption",
-        subtitle: "click OK",
-        image_url: IMG_BASE_PATH + "08-text-entry-done.png",
-        buttons: sectionButtons
-      }, {
-        title: "Caption",
-        subtitle: "Caption done",
-        image_url: IMG_BASE_PATH + "09-text-complete.png",
-        buttons: sectionButtons
-      });
-      break;
-    case 'QR_BACKGROUND_1':
-      addSectionButton('Rotation', 'QR_ROTATION_1');
-      addSectionButton('Photo', 'QR_PHOTO_1');
-      addSectionButton('Caption', 'QR_CAPTION_1');
-
-      templateElements.push({
-        title: "Background Color Picker",
-        subtitle: "click to start",
-        image_url: IMG_BASE_PATH + "10-background-picker-hover.png",
-        buttons: sectionButtons
-      }, {
-        title: "Background Color Picker",
-        subtitle: "click current color",
-        image_url: IMG_BASE_PATH + "11-background-picker-appears.png",
-        buttons: sectionButtons
-      }, {
-        title: "Background Color Picker",
-        subtitle: "select new color",
-        image_url: IMG_BASE_PATH + "12-background-picker-selection.png",
-        buttons: sectionButtons
-      }, {
-        title: "Background Color Picker",
-        subtitle: "click ok",
-        image_url: IMG_BASE_PATH + "13-background-picker-selection-made.png",
-        buttons: sectionButtons
-      }, {
-        title: "Background Color Picker",
-        subtitle: "color is applied",
-        image_url: IMG_BASE_PATH + "14-background-changed.png",
-        buttons: sectionButtons
-      });
-      break;
-  }
-
-  if (templateElements.length < 2) {
-    console.error("each template should have at least two elements");
-  }
-
-  var messageData = {
-    recipient: {
-      id: recipientId
-    },
-    message: {
-      type: "element_share",
-      share_contents: {
-        attachment: {
-          type: "template",
-          payload: {
-            template_type: "generic",
-            elements: templateElements
-          }
-        }
-      }
-    }
-
-  };
-
-  return messageData;
-}
-
 function compileAddressString(addressObj) {
   return `${addressObj.streetNumber} ${addressObj.streetName}, 
   ${addressObj.city}, ${addressObj.province} ${addressObj.postal}`;
@@ -500,14 +382,48 @@ function getMultipleGenericTemplates(recipientId, clubObjects) {
         webview_height_ratio: "tall"
       };
     }
-    if (clubObject.membershipContact.phone) {
-      btns.push({
-        type: "phone_number",
-        title: `Call for membership`, // was too long to include name ${clubObject.membershipContact.name}
-        payload: clubObject.membershipContact.phone
-      });
-    }
+    // if (clubObject.membershipContact.phone) {
+    //   btns.push({
+    //     type: "phone_number",
+    //     title: `Call for membership`, // was too long to include name ${clubObject.membershipContact.name}
+    //     payload: clubObject.membershipContact.phone
+    //   });
+    // }
 
+    //more info button
+    btns.push({
+      "type": "postback",
+      "title": "More Info",
+      "payload": `clubId:${clubObject.clubName}`
+    });
+
+    //share button
+    // btns.push({
+    //   type: "element_share",
+    //   share_contents: {
+    //     attachment: {
+    //       "type": "template",
+    //       "payload": {
+    //         "template_type": "generic",
+    //         "elements": [
+    //           {
+    //             "title": clubObject.clubName,
+    //             "subtitle": compileAddressString(clubObject.meetings.address),
+    //             "image_url": clubObject.imageUrl,
+    //             "default_action": defaultAction,
+    //             "buttons": [
+    //               // {
+    //               //   "type": "web_url",
+    //               //   "url": clubObject.website || 'https://directory.lionsclubs.org/', 
+    //               //   "title": "Find your local Lions Club"
+    //               // }
+    //             ]
+    //           }
+    //         ]
+    //       }
+    //     }
+    //   }
+    // });
 
     var messageData = {
       title: clubObject.clubName,
